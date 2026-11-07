@@ -28,6 +28,7 @@ from backend.util.exceptions import (
     PreconditionFailed,
 )
 from backend.util.settings import Settings
+from backend.util.sql import escape_like
 
 from . import exceptions as store_exceptions
 from . import model as store_model
@@ -47,6 +48,9 @@ DEFAULT_ADMIN_EMAIL = "admin@autogpt.co"
 
 # Creator search reads only this much of a query, which bounds its ILIKE pattern.
 MAX_CREATOR_SEARCH_QUERY_LENGTH = 100
+# Cap on users matched by email in the admin listings search, so a broad term
+# doesn't load the whole User table.
+ADMIN_LISTINGS_USER_MATCH_LIMIT = 500
 
 
 class StoreAgentsSortOptions(Enum):
@@ -746,7 +750,7 @@ async def get_store_submissions(
         else:
             where["user_id"] = user_id
 
-        normalized_query = (search_query or "").strip()
+        normalized_query = escape_like((search_query or "").strip())
         if normalized_query:
             where["OR"] = [
                 {"name": {"contains": normalized_query, "mode": "insensitive"}},
@@ -1420,6 +1424,8 @@ async def get_my_agents(
         search_query,
     )
 
+    # Outside the try below, so a NUL in the query is a 400, not a DatabaseError.
+    normalized_query = escape_like((search_query or "").strip())
     try:
         agent_graph_filter: prisma.types.AgentGraphWhereInput = {
             "StoreListingVersions": {
@@ -1431,7 +1437,6 @@ async def get_my_agents(
             }
         }
 
-        normalized_query = (search_query or "").strip()
         if normalized_query:
             agent_graph_filter["OR"] = [
                 {"name": {"contains": normalized_query, "mode": "insensitive"}},
@@ -2083,9 +2088,11 @@ async def get_admin_listings_with_versions(
         store_listing_filter["Versions"] = {"some": {"submissionStatus": status}}
 
     if search_query:
+        search_query = escape_like(search_query)
         # Find users with matching email
         matching_users = await prisma.models.User.prisma().find_many(
             where={"email": {"contains": search_query, "mode": "insensitive"}},
+            take=ADMIN_LISTINGS_USER_MATCH_LIMIT,
         )
 
         user_ids = [user.id for user in matching_users]
