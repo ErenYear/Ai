@@ -15,7 +15,7 @@ import pytest
 from prisma.enums import BrainDumpInputMode
 from pytest_mock import MockerFixture
 
-from backend.api.features.onboarding_dump import quality
+from backend.api.features.onboarding_dump import quality, stt_artifacts
 
 SUBSTANTIAL_DUMP = (
     "So I run a small bakery in Lisbon with my sister. Every Friday we get "
@@ -251,12 +251,134 @@ async def test_short_filler_rejects_via_llm(llm):
 
 
 @pytest.mark.asyncio
-async def test_hallucinated_outro_rejects_via_llm(llm):
+async def test_hallucinated_outro_variant_still_rejects_via_llm(llm):
+    # Not on the artifact list word for word, so the judge still decides.
     llm(_llm_client('{"usable": false}'))
     assert (
-        await quality.check_transcript_quality("Thank you for watching.")
+        await quality.check_transcript_quality("Thanks so much for watching, guys.")
         == JUDGED_UNUSABLE
     )
+
+
+# --- speech-to-text artifacts: what a silent mic comes back as -------------
+
+
+def _spellings(phrase: str) -> list[str]:
+    """The same artifact as a transcript might carry it."""
+    title = phrase.title()
+    spellings = [
+        phrase,
+        f"{phrase.capitalize()}.",
+        f"  {phrase.upper()}!!!  ",
+        f"{title}...",
+        f"[{title}]",
+        f"♪ {title} ♪",
+        f"{phrase.replace(' ', ',  ')}?",
+        phrase.replace(" ", "-"),
+    ]
+    # A one-word phrase spells the same with and without its spaces replaced.
+    return list(dict.fromkeys(spellings))
+
+
+# Pinned here rather than read from ``STT_ARTIFACT_PHRASES``, so dropping a
+# phrase from the module fails these tests instead of quietly losing them.
+_PINNED_ARTIFACTS = [
+    "thank you",
+    "thank you so much",
+    "thanks for watching",
+    "thank you for watching",
+    "thank you so much for watching",
+    "please subscribe",
+    "like and subscribe",
+    "bye",
+    "bye bye",
+    "you",
+    "music",
+    "applause",
+    "subtitles by the amara org community",
+]
+
+_ARTIFACT_SPELLINGS = [
+    spelling for phrase in _PINNED_ARTIFACTS for spelling in _spellings(phrase)
+]
+
+# Several artifacts in one take: a silent mic often comes back as a run of them.
+_ARTIFACT_RUNS = [
+    "Thank you. Thank you.",
+    "Thank you. Bye.",
+    "Thank you thank you thank you",
+    "Thanks for watching! Please subscribe.",
+    "[Music] [Applause]",
+    "Bye-bye. Thank you so much for watching.",
+    "You. You.",
+]
+
+
+def test_every_artifact_phrase_is_stored_normalised():
+    # The set is matched after normalising, so an entry with capitals or
+    # punctuation in it could never match anything.
+    assert stt_artifacts.STT_ARTIFACT_PHRASES
+    for phrase in stt_artifacts.STT_ARTIFACT_PHRASES:
+        assert phrase == stt_artifacts.normalise_for_artifact_match(phrase)
+
+
+def test_the_pinned_artifacts_are_the_module_list():
+    assert set(_PINNED_ARTIFACTS) == stt_artifacts.STT_ARTIFACT_PHRASES
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("transcript", _ARTIFACT_SPELLINGS + _ARTIFACT_RUNS)
+async def test_a_speech_to_text_artifact_is_no_usable_speech_for_voice(
+    llm, transcript: str
+):
+    client_factory = llm(_llm_client('{"usable": true}'))
+    assert (
+        await quality.check_transcript_quality(
+            transcript, input_mode=BrainDumpInputMode.voice
+        )
+        == DETERMINISTIC
+    )
+    assert await quality.check_transcript_quality(transcript) == DETERMINISTIC
+    client_factory.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "transcript",
+    [f"{phrase.capitalize()}." for phrase in _PINNED_ARTIFACTS] + _ARTIFACT_RUNS,
+)
+async def test_typed_text_that_matches_an_artifact_still_goes_to_the_judge(
+    llm, transcript: str
+):
+    # A keyboard cannot mishear, so typed text keeps the judge's call.
+    client = _llm_client('{"usable": false}')
+    llm(client)
+    assert (
+        await quality.check_transcript_quality(
+            transcript, input_mode=BrainDumpInputMode.typed
+        )
+        == JUDGED_UNUSABLE
+    )
+    client.chat.completions.create.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "transcript",
+    [
+        "Um, okay. Hi. Is this working?",
+        "Thank you for taking this off my plate.",
+        "Bye bye invoices, that's what I want.",
+        "You know, I run a bakery.",
+    ],
+)
+async def test_a_take_that_only_contains_an_artifact_phrase_goes_to_the_judge(
+    llm, transcript: str
+):
+    client = _llm_client('{"usable": false}')
+    llm(client)
+    assert await quality.check_transcript_quality(transcript) == JUDGED_UNUSABLE
+    client.chat.completions.create.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -286,6 +408,83 @@ async def test_typed_text_is_judged_without_the_speech_rules(
     prompt = client.chat.completions.create.await_args.kwargs["messages"][0]["content"]
     assert asked in prompt and not_asked not in prompt
     assert prompt.endswith("I run a bakery.\n")
+
+
+# --- Otto's reply: written by the judge, never needed for the verdict -----
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "input_mode", [BrainDumpInputMode.voice, BrainDumpInputMode.typed]
+)
+async def test_an_unusable_verdict_carries_the_judges_reply(
+    llm, input_mode: BrainDumpInputMode
+):
+    llm(
+        _llm_client('{"usable": false, "reply": "  No pressure at all. So tell me,  "}')
+    )
+
+    rejection = await quality.check_transcript_quality(
+        "I don't really want to do this.", input_mode=input_mode
+    )
+
+    assert rejection == quality.QualityRejection(
+        error_code=quality.INSUFFICIENT_CONTENT,
+        reason="judge_unusable",
+        reply="No pressure at all. So tell me,",
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "content",
+    [
+        '{"usable": false}',
+        '{"usable": false, "reply": null}',
+        '{"usable": false, "reply": 7}',
+        '{"usable": false, "reply": "What do you do?"}',
+        json.dumps({"usable": False, "reply": "word " * 40}),
+    ],
+    ids=["missing", "null", "not-text", "question", "too-long"],
+)
+async def test_a_reply_that_cannot_be_shown_still_rejects_as_insufficient(
+    llm, content: str
+):
+    # The verdict stands on its own: the screen falls back to its fixed line.
+    llm(_llm_client(content))
+
+    assert await quality.check_transcript_quality("Hello? Hello?") == JUDGED_UNUSABLE
+
+
+@pytest.mark.asyncio
+async def test_a_usable_verdict_ignores_any_reply(llm):
+    llm(_llm_client('{"usable": true, "reply": "Great, thanks."}'))
+
+    assert await quality.check_transcript_quality("Automate my invoices.") is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "input_mode", [BrainDumpInputMode.voice, BrainDumpInputMode.typed]
+)
+async def test_both_judges_ask_for_otto_s_reply_with_room_to_write_it(
+    llm, input_mode: BrainDumpInputMode
+):
+    client = _llm_client('{"usable": false}')
+    llm(client)
+
+    await quality.check_transcript_quality("Hi.", input_mode=input_mode)
+
+    kwargs = client.chat.completions.create.await_args.kwargs
+    prompt = kwargs["messages"][0]["content"]
+    assert '{"usable": false, "reply": "..."}' in prompt
+    assert "What do you want off your plate?" in prompt
+    assert "{" + "{" not in prompt and "}" + "}" not in prompt
+    assert kwargs["max_tokens"] >= 160
+    # A keyboard can't be heard: the typed brief must not say it was.
+    typed = input_mode == BrainDumpInputMode.typed
+    assert ("never mention hearing" in prompt) is typed
+    assert ("a mic check gets a yes" in prompt) is not typed
 
 
 def test_count_words_skips_tokens_without_a_letter_or_digit():
@@ -322,7 +521,7 @@ def _no_choices_client() -> MagicMock:
 async def test_the_judge_asks_for_no_reasoning_and_logs_why_a_verdict_is_missing(
     llm, caplog
 ):
-    # Thinking counts against the 100-token cap on Haiku 5.5, so a judge that
+    # Thinking counts against the token cap on Haiku 5.5, so a judge that
     # thinks answers nothing; the log has to say so without the content.
     client = _llm_client('{"usa', finish_reason="length")
     llm(client)
