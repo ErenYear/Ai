@@ -1913,6 +1913,7 @@ def _empty_ui_message_stream_response(
             "header before retrying."
         },
     },
+    dependencies=[Security(auth.requires_live_session)],
 )
 # The paywall and the rate-limit checks below each read a trial user's
 # subscription trial; inside this handler they share one read.
@@ -2445,6 +2446,7 @@ async def stream_chat_post(
             "client should honour the Retry-After header before retrying."
         },
     },
+    dependencies=[Security(auth.requires_live_session)],
 )
 async def queue_pending_message(
     session_id: str,
