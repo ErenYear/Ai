@@ -8531,18 +8531,24 @@ secretstorage = ["secretstorage"]
 
 [[package]]
 name = "zerobouncesdk"
-version = "1.1.2"
+version = "3.0.0"
 description = "ZeroBounce Python API - https://www.zerobounce.net."
 optional = false
-python-versions = ">=3.7"
+python-versions = ">=3.10"
 groups = ["main"]
 files = [
-    {file = "zerobouncesdk-1.1.2-py3-none-any.whl", hash = "sha256:a89febfb3adade01c314e6bad2113ad093f1e1cca6ddf9fcf445a8b2a9a458b4"},
-    {file = "zerobouncesdk-1.1.2.tar.gz", hash = "sha256:24810a2e39c963bc75b4732356b0fc8b10091f2c892f0c8b08fbb32640fdccaf"},
+    {file = "zerobouncesdk-3.0.0-py3-none-any.whl", hash = "sha256:eabcb7f74d69fd73549252ed79ddc67c99df7ccf6a6bc3ee18de716714a034b4"},
+    {file = "zerobouncesdk-3.0.0.tar.gz", hash = "sha256:e4c9dc43c6f38b2d7610affc401c3602e9e6aa99ad0d80a9c6727aec21f760b2"},
 ]
 
 [package.dependencies]
-requests = ">=2.22.0"
+certifi = ">=2026.10.19"
+idna = ">=3.15"
+requests = ">=2.33.0"
+urllib3 = ">=2.8.0"
+
+[package.extras]
+test = ["pytest (>=9.0.3)", "pytest-cov (>=4.0.0)"]
 
 [[package]]
 name = "zipp"
@@ -8679,4 +8685,4 @@ cffi = ["cffi (>=1.17,<2.0) ; platform_python_implementation != \"PyPy\" and pyt
 [metadata]
 lock-version = "2.1"
 python-versions = ">=3.11,<3.14"
-content-hash = "83d560a0ab319cde834a8effc9d9516f792014d57be40002950caea497d7f791"
+content-hash = "f1d2635e64d3f73d8f015cdf58017746cbd0879c67ddad25d6afe86eaa105891"
